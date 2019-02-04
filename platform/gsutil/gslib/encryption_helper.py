@@ -21,10 +21,17 @@ from hashlib import sha256
 import boto
 
 from gslib.cloud_api import CryptoTuple
+from gslib.keynexus.crypto_tuple import KeyNexusCryptoTuple
 from gslib.exception import CommandException
 
 
 _MAX_DECRYPTION_KEYS = 100
+encryption_key = boto.config.get('GSUtil', 'encryption_key', None)
+
+
+def GetKeyNexusCryptoKey(key_id, key_version, sha256):
+  """Returns a Base64-encoded encryption key if found, None otherwise"""
+  return KeyNexusCryptoTuple(key_id, key_version).crypto_key
 
 
 def CryptoTupleFromKey(crypto_key):
@@ -41,7 +48,6 @@ def FindMatchingCryptoKey(key_sha256):
   Returns:
     Base64-encoded encryption key string if a match is found, None otherwise.
   """
-  encryption_key = boto.config.get('GSUtil', 'encryption_key', None)
   if encryption_key is not None:
     if key_sha256 == Base64Sha256FromBase64EncryptionKey(encryption_key):
       return encryption_key
@@ -60,9 +66,11 @@ def FindMatchingCryptoKey(key_sha256):
 
 def GetEncryptionTuple():
   """Returns the encryption tuple from .boto configuration."""
-  encryption_key = _GetBase64EncryptionKey()
-  return CryptoTuple(encryption_key) if encryption_key else None
-
+  if encryption_key == "keynexus":
+    return KeyNexusCryptoTuple()
+  else:
+    return CryptoTuple(encryption_key) if encryption_key else None
+  
 
 def GetEncryptionTupleAndSha256Hash():
   """Returns encryption tuple and SHA256 key hash from .boto configuration."""
@@ -104,3 +112,10 @@ def _GetBase64EncryptionKey():
           'double-check your configuration and ensure the key is valid and in '
           'base64 format.')
   return encryption_key
+
+
+if encryption_key == "keynexus":
+  keynexus = True
+else:
+  keynexus = False
+  encryption_key = _GetBase64EncryptionKey()

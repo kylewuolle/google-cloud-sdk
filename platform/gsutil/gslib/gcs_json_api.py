@@ -52,6 +52,7 @@ from gslib.cloud_api_helper import ListToGetFields
 from gslib.cloud_api_helper import ValidateDstObjectMetadata
 from gslib.encryption_helper import Base64Sha256FromBase64EncryptionKey
 from gslib.encryption_helper import FindMatchingCryptoKey
+from gslib.encryption_helper import GetKeyNexusCryptoKey
 from gslib.gcs_json_credentials import CheckAndGetCredentials
 from gslib.gcs_json_credentials import GetCredentialStoreKeyDict
 from gslib.gcs_json_media import BytesTransferredContainer
@@ -88,6 +89,7 @@ from gslib.util import GetPrintableExceptionString
 from gslib.util import JsonResumableChunkSizeDefined
 from gslib.util import LogAndHandleRetries
 from gslib.util import NUM_OBJECTS_PER_LIST_PAGE
+from gslib.keynexus.crypto_tuple import KeyNexusCryptoTuple
 
 
 import httplib2
@@ -667,6 +669,8 @@ class GcsJsonApi(CloudApi):
       headers['x-goog-encryption-key'] = crypto_tuple.crypto_key
       headers['x-goog-encryption-key-sha256'] = (
           Base64Sha256FromBase64EncryptionKey(crypto_tuple.crypto_key))
+      if isinstance( crypto_tuple, KeyNexusCryptoTuple ):
+        headers['x-goog-meta-keynexus-keyref'] = crypto_tuple.key_id + ":" + crypto_tuple.key_version
     return headers
 
   def _RewriteCryptoHeadersFromTuples(self, decryption_tuple=None,
@@ -686,6 +690,8 @@ class GcsJsonApi(CloudApi):
       headers['x-goog-encryption-key'] = encryption_tuple.crypto_key
       headers['x-goog-encryption-key-sha256'] = (
           Base64Sha256FromBase64EncryptionKey(encryption_tuple.crypto_key))
+      if isinstance( encryption_tuple, KeyNexusCryptoTuple ):
+        headers['x-goog-meta-keynexus-keyref'] = encryption_tuple.key_id + ":" + encryption_tuple.key_version
 
     return headers
 
@@ -757,7 +763,17 @@ class GcsJsonApi(CloudApi):
                                                     global_params=global_params)
       if self._ShouldTryWithEncryptionKey(object_metadata, fields=fields):
         key_sha256 = object_metadata.customerEncryption.keySha256
-        decryption_key = FindMatchingCryptoKey(key_sha256)
+
+        keynexus = False
+        for additionalProperty in object_metadata.metadata.additionalProperties:
+          if additionalProperty.key == 'keynexus-keyref':
+            keynexus = True
+            keynexus_key_id, keynexus_key_version = additionalProperty.value.split( ':' )
+            decryption_key = GetKeyNexusCryptoKey( keynexus_key_id, keynexus_key_version, key_sha256 )
+
+        if not keynexus:    
+          decryption_key = FindMatchingCryptoKey(key_sha256)
+
         if not decryption_key:
           raise EncryptionException(
               'Missing decryption key with SHA256 hash %s. No decryption key '
@@ -1091,6 +1107,19 @@ class GcsJsonApi(CloudApi):
         if not preconditions:
           preconditions = Preconditions()
 
+        if ( isinstance( encryption_tuple, KeyNexusCryptoTuple ) ):
+
+          if not object_metadata.metadata:
+            object_metadata.metadata = apitools_messages.Object.MetadataValue()
+          if not object_metadata.metadata.additionalProperties:
+            object_metadata.metadata.additionalProperties = []
+          object_metadata.metadata.additionalProperties.append(
+            apitools_messages.Object.MetadataValue.AdditionalProperty(
+              key = "keynexus-keyref",
+              value = encryption_tuple.key_id + ":" + encryption_tuple.key_version
+            )
+          )
+
         apitools_request = apitools_messages.StorageObjectsInsertRequest(
             bucket=object_metadata.bucket, object=object_metadata,
             ifGenerationMatch=preconditions.gen_match,
@@ -1350,6 +1379,19 @@ class GcsJsonApi(CloudApi):
                                                   rewrite_params_hash)
     crypto_headers = self._RewriteCryptoHeadersFromTuples(
         decryption_tuple=decryption_tuple, encryption_tuple=encryption_tuple)
+
+    if ( isinstance( encryption_tuple, KeyNexusCryptoTuple ) ):
+
+      if not dst_obj_metadata.metadata:
+        dst_obj_metadata.metadata = apitools_messages.Object.MetadataValue()
+      if not dst_obj_metadata.metadata.additionalProperties:
+        dst_obj_metadata.metadata.additionalProperties = []
+      dst_obj_metadata.metadata.additionalProperties.append(
+        apitools_messages.Object.MetadataValue.AdditionalProperty(
+          key = "keynexus-keyref",
+          value = encryption_tuple.key_id + ":" + encryption_tuple.key_version
+        )
+      )
 
     progress_cb_with_timeout = None
     try:

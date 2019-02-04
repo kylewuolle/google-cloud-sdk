@@ -27,6 +27,7 @@ from gslib.command_argument import CommandArgument
 from gslib.cs_api_map import ApiSelector
 from gslib.encryption_helper import CryptoTupleFromKey
 from gslib.encryption_helper import FindMatchingCryptoKey
+from gslib.encryption_helper import GetKeyNexusCryptoKey
 from gslib.encryption_helper import GetEncryptionTupleAndSha256Hash
 from gslib.exception import CommandException
 from gslib.name_expansion import NameExpansionIterator
@@ -339,7 +340,19 @@ class RewriteCommand(Command):
       if src_encryption_sha256 is None:
         operation_name = 'Encrypting'
       else:
-        decryption_key = FindMatchingCryptoKey(src_encryption_sha256)
+
+        keynexus = False
+        for additionalProperty in src_metadata.metadata.additionalProperties:
+          if additionalProperty.key == 'keynexus-keyref':
+            keynexus = True
+            keynexus_key_id, keynexus_key_version = additionalProperty.value.split( ':' )
+            key_sha256 = src_metadata.customerEncryption.keySha256
+            decryption_key = GetKeyNexusCryptoKey( keynexus_key_id, keynexus_key_version, key_sha256 )
+
+        if not keynexus:  
+          decryption_key = FindMatchingCryptoKey(
+            src_obj_metadata.customerEncryption.keySha256)
+
         if not decryption_key:
           raise EncryptionException(
               'Missing decryption key with SHA256 hash %s. No decryption key '

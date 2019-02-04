@@ -69,6 +69,7 @@ from gslib.encryption_helper import CryptoTupleFromKey
 from gslib.encryption_helper import FindMatchingCryptoKey
 from gslib.encryption_helper import GetEncryptionTuple
 from gslib.encryption_helper import GetEncryptionTupleAndSha256Hash
+from gslib.encryption_helper import GetKeyNexusCryptoKey
 from gslib.exception import CommandException
 from gslib.exception import HashMismatchException
 from gslib.file_part import FilePart
@@ -2957,7 +2958,7 @@ def GetSourceFieldsNeededForCopy(dst_is_cloud, skip_unsupported_objects,
     # Just get the fields needed to perform and validate the download.
     src_obj_fields = ['crc32c', 'contentEncoding', 'contentType',
                       'customerEncryption', 'etag', 'mediaLink', 'md5Hash',
-                      'size', 'generation']
+                      'size', 'generation', 'metadata/keynexus-keyref']
     if is_rsync:
       src_obj_fields.extend(['metadata/%s' % MTIME_ATTR, 'timeCreated'])
     if preserve_posix:
@@ -2969,6 +2970,49 @@ def GetSourceFieldsNeededForCopy(dst_is_cloud, skip_unsupported_objects,
     src_obj_fields.append('storageClass')
 
   return src_obj_fields
+
+
+def GetDecryptionKey(src_url, src_obj_metadata):
+  """Ensures a matching decryption key is available for the source object.
+
+  Args:
+    src_url: CloudUrl for the source object.
+    src_obj_metadata: source object metadata with optional customerEncryption
+        field.
+
+  Raises:
+    SkipGlacierError: if skipping a s3 Glacier object.
+    EncryptionException if the object is encrypted and no matching key is found.
+
+  Returns:
+    Base64-encoded decryption key string if the object is encrypted and a
+    matching key is found, or None if object is not encrypted.
+  """
+  if (src_url.scheme == 's3' and
+      global_copy_helper_opts.skip_unsupported_objects and
+      src_obj_metadata.storageClass == 'GLACIER'):
+    raise SkipGlacierError()
+
+  if src_obj_metadata.customerEncryption:
+
+    keynexus = False
+    for additionalProperty in src_obj_metadata.metadata.additionalProperties:
+      if additionalProperty.key == 'keynexus-keyref':
+        keynexus = True
+        keynexus_key_id, keynexus_key_version = additionalProperty.value.split( ':' )
+        key_sha256 = src_obj_metadata.customerEncryption.keySha256
+        decryption_key = GetKeyNexusCryptoKey( keynexus_key_id, keynexus_key_version, key_sha256 )
+
+    if not keynexus:  
+      decryption_key = FindMatchingCryptoKey(
+        src_obj_metadata.customerEncryption.keySha256)
+
+    if not decryption_key:
+      raise EncryptionException(
+          'Missing decryption key with SHA256 hash %s. No decryption key '
+          'matches object %s' % (
+              src_obj_metadata.customerEncryption.keySha256, src_url))
+    return decryption_key
 
 
 # pylint: disable=undefined-variable
@@ -3041,8 +3085,19 @@ def PerformCopy(logger, src_url, dst_url, gsutil_api,
       raise SkipGlacierError()
 
     if src_obj_metadata.customerEncryption:
-      decryption_key = FindMatchingCryptoKey(
+
+      keynexus = False
+      for additionalProperty in src_obj_metadata.metadata.additionalProperties:
+        if additionalProperty.key == 'keynexus-keyref':
+          keynexus = True
+          keynexus_key_id, keynexus_key_version = additionalProperty.value.split( ':' )
+          key_sha256 = src_obj_metadata.customerEncryption.keySha256
+          decryption_key = GetKeyNexusCryptoKey( keynexus_key_id, keynexus_key_version, key_sha256 )
+
+      if not keynexus:  
+        decryption_key = FindMatchingCryptoKey(
           src_obj_metadata.customerEncryption.keySha256)
+
       if not decryption_key:
         raise EncryptionException(
             'Missing decryption key with SHA256 hash %s. No decryption key '
